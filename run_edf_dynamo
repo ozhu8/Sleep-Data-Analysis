@@ -1,0 +1,119 @@
+import numpy as np
+import pandas as pd
+import mne
+
+from dynam_o.utils import summary_plot
+from dynam_o.pipelines import compute_sophs, run_tfpeaks_soph
+
+
+def run_shhs_histogram(
+    edf_path,
+    stages_csv_path,
+    fs=100,
+    norm_method='percent',
+    quality='fast',
+    load_peaks=False,
+    save_peaks=True
+):
+    print("Loading EEG + stages...")
+
+    # === Load EEG ===
+    raw = mne.io.read_raw_edf(edf_path, preload=True)
+    raw.filter(0.1, 35)
+
+    data = raw.get_data()[0]  # single channel (adjust if needed)
+
+    # === Load stages CSV ===
+    stages_df = pd.read_csv(stages_csv_path)
+
+    # IMPORTANT: adjust column name if needed
+    # e.g. "stage", "Stage", "SleepStage"
+    stages = stages_df.iloc[:, 0].values.astype(int)
+
+    print("Done loading")
+
+    # =========================
+    # TF-PEAK DETECTION
+    # =========================
+    if quality == 'fast':
+        downsample = [2, 2]
+        segment_dur = 30
+        merge_thresh = 11
+    elif quality == 'precision':
+        downsample = []
+        segment_dur = 30
+        merge_thresh = 8
+    else:
+        raise ValueError("Unsupported quality")
+
+    trim_volume = 0.8
+    max_merges = np.inf
+
+    print("Running TF-peak detection...")
+
+    stats_table, *_ = run_tfpeaks_soph(
+        data,
+        fs,
+        stages,
+        downsample,
+        segment_dur,
+        merge_thresh,
+        max_merges,
+        trim_volume,
+        norm_method=norm_method
+    )
+
+    if save_peaks:
+        stats_table.to_csv("shhs_peaks.csv", index=False)
+        print("Saved peaks → shhs_peaks.csv")
+
+    # =========================
+    # COMPUTE HISTOGRAMS
+    # =========================
+    print("Computing histograms...")
+
+    (
+        SOpower_hist,
+        SOphase_hist,
+        SOpower_cbins,
+        SOphase_cbins,
+        freq_cbins,
+        peak_selection_inds,
+        SO_power_norm,
+        SO_power_times,
+        SO_power_label,
+        *_
+    ) = compute_sophs(data, fs, stages, stats_table, norm_method=norm_method)
+
+    # =========================
+    # PLOT SUMMARY (this gives histograms)
+    # =========================
+    print("Plotting...")
+
+    summary_plot(
+        data,
+        fs,
+        stages,
+        stats_table.iloc[peak_selection_inds],
+        SOpower_hist,
+        SOpower_cbins,
+        SO_power_norm,
+        SO_power_times,
+        SO_power_label,
+        SOphase_hist,
+        freq_cbins
+    )
+
+
+def main():
+    run_shhs_histogram(
+        edf_path="/Users/oliviazhu/Documents/yasa/shhs1-200001.edf",
+        stages_csv_path="/Users/oliviazhu/git/pyDYNAM-O/examples/shhs1-200001_stages.csv",
+        fs=100,
+        norm_method='percent',
+        quality='fast'
+    )
+
+
+if __name__ == "__main__":
+    main()
