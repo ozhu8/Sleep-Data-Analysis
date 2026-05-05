@@ -6,50 +6,77 @@ from dynam_o.utils import summary_plot
 from dynam_o.pipelines import compute_sophs, run_tfpeaks_soph
 
 
-def run_shhs_histogram(
-    edf_path,
-    stages_csv_path,
-    fs=100,
-    norm_method='percent',
-    quality='fast',
-    load_peaks=False,
-    save_peaks=True
-):
-    print("Loading EEG + stages...")
+def load_and_prepare_data(edf_path, stages_csv_path):
+    print("Loading EEG...")
 
-    # === Load EEG ===
     raw = mne.io.read_raw_edf(edf_path, preload=True)
     raw.filter(0.1, 35)
 
-    data = raw.get_data()[0]  # single channel (adjust if needed)
+    # Pick ONE EEG channel (important!)
+    print("Available channels:", raw.ch_names)
+    eeg_ch = "EEG"
 
-    # === Load stages CSV ===
+    raw_eeg = raw.copy().pick([eeg_ch])
+    data = raw_eeg.get_data().squeeze()
+
+    fs = raw.info['sfreq']
+
+    print("Loading stages...")
+
     stages_df = pd.read_csv(stages_csv_path)
 
-    # IMPORTANT: adjust column name if needed
-    # e.g. "stage", "Stage", "SleepStage"
-    stages = stages_df.iloc[:, 0].values.astype(int)
+    epoch_len = 30
+    total_duration = raw.times[-1]
 
-    print("Done loading")
+    # Create full epoch timeline
+    epoch_times = np.arange(0, total_duration, epoch_len)
 
-    # =========================
-    # TF-PEAK DETECTION
-    # =========================
-    if quality == 'fast':
-        downsample = [2, 2]
-        segment_dur = 30
-        merge_thresh = 11
-    elif quality == 'precision':
-        downsample = []
-        segment_dur = 30
-        merge_thresh = 8
-    else:
-        raise ValueError("Unsupported quality")
+    # Expand event-based stages → epoch-based
+    # stage_interp = np.zeros_like(epoch_times)
+
+    # current_stage = stages_df.iloc[0]["Stage"]
+    # j = 0
+
+    # for i, t in enumerate(epoch_times):
+    #     while j + 1 < len(stages_df) and t >= stages_df.iloc[j + 1]["Time"]:
+    #         j += 1
+    #         current_stage = stages_df.iloc[j]["Stage"]
+    #     stage_interp[i] = current_stage
+
+    # Map Profusion → DYNAM-O stages
+    mapping = {
+        0: 5,  # Wake
+        1: 3,  # N1
+        2: 2,  # N2
+        3: 1,  # N3
+        5: 4   # REM
+    }
+
+    # print(stages_df)
+    stages_df.iloc[:, 1] = stages_df.iloc[:, 1].map(mapping)
+    # stages = [(x, mapping[y]) for x, y in stages_df]
+
+    # stage_interp = np.array([mapping[s] for s in stage_interp])
+
+    # stages = pd.DataFrame({
+    #     "Time": epoch_times,
+    #     "Stage": stage_interp
+    # })
+
+    # print("Stage counts:\n", stages["Stage"].value_counts())
+
+    return data, fs, stages_df
+
+
+def run_dynamo(data, fs, stages):
+    print("Running TF-peak detection...")
+
+    downsample = [5, 1]
+    segment_dur = 30
+    merge_thresh = 13
 
     trim_volume = 0.8
     max_merges = np.inf
-
-    print("Running TF-peak detection...")
 
     stats_table, *_ = run_tfpeaks_soph(
         data,
@@ -60,59 +87,50 @@ def run_shhs_histogram(
         merge_thresh,
         max_merges,
         trim_volume,
-        norm_method=norm_method
+        norm_method='p5shift'
     )
 
-    if save_peaks:
-        stats_table.to_csv("shhs_peaks.csv", index=False)
-        print("Saved peaks → shhs_peaks.csv")
+    # print("Computing histograms...")
 
-    # =========================
-    # COMPUTE HISTOGRAMS
-    # =========================
-    print("Computing histograms...")
+    # (
+    #     SOpower_hist,
+    #     SOphase_hist,
+    #     SOpower_cbins,
+    #     SOphase_cbins,
+    #     freq_cbins,
+    #     peak_selection_inds,
+    #     SO_power_norm,
+    #     SO_power_times,
+    #     SO_power_label,
+    #     *_
+    # ) = compute_sophs(data, fs, stages, stats_table, norm_method='percent')
 
-    (
-        SOpower_hist,
-        SOphase_hist,
-        SOpower_cbins,
-        SOphase_cbins,
-        freq_cbins,
-        peak_selection_inds,
-        SO_power_norm,
-        SO_power_times,
-        SO_power_label,
-        *_
-    ) = compute_sophs(data, fs, stages, stats_table, norm_method=norm_method)
+    # print(f"Selected peaks: {len(peak_selection_inds)}")
 
-    # =========================
-    # PLOT SUMMARY (this gives histograms)
-    # =========================
-    print("Plotting...")
+    # print("Plotting results...")
 
-    summary_plot(
-        data,
-        fs,
-        stages,
-        stats_table.iloc[peak_selection_inds],
-        SOpower_hist,
-        SOpower_cbins,
-        SO_power_norm,
-        SO_power_times,
-        SO_power_label,
-        SOphase_hist,
-        freq_cbins
-    )
+    # summary_plot(
+    #     data,
+    #     fs,
+    #     stages,
+    #     stats_table.iloc[peak_selection_inds],
+    #     SOpower_hist,
+    #     SOpower_cbins,
+    #     SO_power_norm,
+    #     SO_power_times,
+    #     SO_power_label,
+    #     SOphase_hist,
+    #     freq_cbins
+    # )
 
 
 def main():
-    run_shhs_histogram(
-        edf_path="/Users/oliviazhu/Documents/yasa/shhs1-200001.edf",
-        stages_csv_path="/Users/oliviazhu/git/pyDYNAM-O/examples/shhs1-200001_stages.csv",
-        fs=100,
-        norm_method='percent',
-        quality='fast'
-    )
+    edf_path = "/Users/oliviazhu/Documents/yasa/shhs1-200001.edf"
+    stages_csv_path = "/Users/oliviazhu/git/pyDYNAM-O/examples/shhs1-200001_stages.csv"
+
+    data, fs, stages = load_and_prepare_data(edf_path, stages_csv_path)
+
+    run_dynamo(data, fs, stages)
 
 
 if __name__ == "__main__":
